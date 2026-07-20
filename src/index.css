@@ -1,0 +1,174 @@
+@import "tailwindcss";
+
+html,
+body,
+#root {
+  min-height: 100%;
+}
+
+body {
+  margin: 0;
+  min-width: 320px;
+  overflow: hidden;
+  background: #080b08;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+.custom-date-input::-webkit-calendar-picker-indicator {
+  position: absolute;
+  right: 0;
+  width: 2.75rem;
+  height: 100%;
+  cursor: pointer;
+  opacity: 0;
+}
+
+.sales-table-scrollbar {
+  scrollbar-color: #49723e #0b100b;
+  scrollbar-width: thin;
+}
+
+.sales-table-scrollbar::-webkit-scrollbar {
+  height: 9px;
+}
+
+.sales-table-scrollbar::-webkit-scrollbar-track {
+  background: #0b100b;
+}
+
+.sales-table-scrollbar::-webkit-scrollbar-thumb {
+  background: #49723e;
+  border: 2px solid #0b100b;
+  border-radius: 999px;
+}
+
+.sales-table-scrollbar::-webkit-scrollbar-thumb:hover {
+  background: #63b447;
+}
+
+@keyframes search-result-highlight {
+  0%,
+  15% {
+    background-color: rgba(99, 180, 71, 0.42);
+    box-shadow: inset 4px 0 0 #8bd174;
+  }
+
+  100% {
+    background-color: transparent;
+    box-shadow: inset 0 0 0 transparent;
+  }
+}
+
+.search-result-highlight {
+  animation: search-result-highlight 3.5s ease-out both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .search-result-highlight {
+    animation-duration: 0.01ms;
+  }
+}
+
+.thermal-receipt {
+  display: none;
+}
+
+@media print {
+  @page {
+    size: 80mm auto;
+    margin: 3mm;
+  }
+
+  body {
+    min-width: 0;
+    overflow: visible;
+    background: #fff;
+  }
+
+  body * {
+    visibility: hidden;
+  }
+
+  .thermal-receipt,
+  .thermal-receipt * {
+    visibility: visible;
+  }
+
+  .thermal-receipt {
+    position: absolute;
+    inset: 0 auto auto 0;
+    display: block;
+    width: 74mm;
+    padding: 0;
+    background: #fff;
+    color: #000;
+    font-family: "Courier New", monospace;
+    font-size: 10px;
+    line-height: 1.35;
+  }
+
+  .thermal-receipt h1 {
+    margin: 0 0 2px;
+    font-size: 18px;
+    font-weight: 800;
+  }
+
+  .thermal-receipt p {
+    margin: 1px 0;
+  }
+
+  .thermal-receipt table {
+    width: 100%;
+    border-collapse: collapse;
+    table-layout: fixed;
+  }
+
+  .thermal-receipt th,
+  .thermal-receipt td {
+    padding: 3px 1px;
+    text-align: right;
+    vertical-align: top;
+    word-break: break-word;
+  }
+
+  .thermal-receipt th:first-child,
+  .thermal-receipt td:first-child {
+    width: 44%;
+    text-align: left;
+  }
+
+  .thermal-receipt th:nth-child(2),
+  .thermal-receipt td:nth-child(2) {
+    width: 10%;
+    text-align: center;
+  }
+
+  .receipt-center {
+    text-align: center;
+  }
+
+  .receipt-divider {
+    margin: 7px 0;
+    border-top: 1px dashed #000;
+  }
+
+  .receipt-meta {
+    text-align: left;
+  }
+
+  .receipt-totals p {
+    display: flex;
+    justify-content: space-between;
+    gap: 8px;
+  }
+
+  .receipt-grand-total {
+    border-top: 1px solid #000;
+    padding-top: 4px;
+    font-size: 12px;
+    font-weight: 800;
+  }
+}
