@@ -1,3 +1,4 @@
+// Temporary customer, supplier, and ledger records for the directory UI.
 export const customerSupplierData = {
   customers: [
     {

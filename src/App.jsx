@@ -9,6 +9,7 @@ import Inventory from './Pages/Inventory'
 import Contacts from './Pages/Contacts'
 import Reports from './Pages/Reports'
 
+// Central route map for every dashboard page and sidebar destination.
 const App = () => {
 
   return (

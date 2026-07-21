@@ -1,3 +1,4 @@
+// Initial alerts used until live backend notifications are implemented.
 export const initialNotifications = [
   {
     id: "notification-1",

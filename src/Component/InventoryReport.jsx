@@ -7,7 +7,20 @@ import {
   FiDownload,
   FiSearch,
 } from "react-icons/fi";
-import { inventoryData } from "../Data/InventoryData.jsx";
+
+const API_URL = import.meta.env.VITE_API_URL || "http://127.0.0.1:8000";
+
+const normalizeInventoryProduct = (product) => ({
+  id: product.id,
+  productId: product.product_id,
+  productName: product.title,
+  category: product.category,
+  supplier: product.supplier,
+  purchaseCost: product.purchase_cost,
+  sellingPrice: product.price,
+  currentStock: product.stock_quantity,
+  minimumStock: product.minimum_stock,
+});
 
 const formatAmount = (amount) =>
   new Intl.NumberFormat("en-PK", {
@@ -28,13 +41,21 @@ const statusStyles = {
   "out-of-stock": "border-red-800/60 bg-red-500/10 text-red-300",
 };
 
-const InventoryReport = () => {
+const InventoryReport = ({
+  items = [],
+  setItems = () => undefined,
+  loading = false,
+  error = "",
+  onInventoryUpdated,
+}) => {
+  // Inventory table controls: search, status filter, pagination, and edit dialog.
   const { state } = useLocation();
-  const [items, setItems] = useState(inventoryData);
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
   const [currentPage, setCurrentPage] = useState(1);
   const [editingItem, setEditingItem] = useState(null);
+  const [isSaving, setIsSaving] = useState(false);
+  const [saveError, setSaveError] = useState("");
   const itemsPerPage = 5;
   const highlightedId = state?.searchType === "Products" ? state.searchTarget : null;
 
@@ -55,6 +76,7 @@ const InventoryReport = () => {
     return () => window.clearTimeout(timeout);
   }, [highlightedId, items]);
 
+  // Derive visible rows from the current query and stock-status filter.
   const filteredItems = useMemo(() => {
     const query = search.trim().toLowerCase();
 
@@ -87,6 +109,7 @@ const InventoryReport = () => {
     setCurrentPage(1);
   };
 
+  // Export the currently filtered inventory rows as a CSV file.
   const exportInventory = () => {
     const headers = ["Product ID", "Product", "Category", "Supplier", "Purchase Cost", "Selling Price", "Current Stock", "Minimum Stock", "Status"];
     const rows = filteredItems.map((item) => [
@@ -110,19 +133,42 @@ const InventoryReport = () => {
     URL.revokeObjectURL(url);
   };
 
-  const saveItem = (event) => {
+  const saveItem = async (event) => {
     event.preventDefault();
-    const updatedItem = {
-      ...editingItem,
-      purchaseCost: Number(editingItem.purchaseCost),
-      sellingPrice: Number(editingItem.sellingPrice),
-      currentStock: Number(editingItem.currentStock),
-      minimumStock: Number(editingItem.minimumStock),
-    };
-    setItems((currentItems) =>
-      currentItems.map((item) => item.id === updatedItem.id ? updatedItem : item)
-    );
-    setEditingItem(null);
+    setIsSaving(true);
+    setSaveError("");
+    try {
+      const response = await fetch(
+        `${API_URL}/UpdateInventory/${encodeURIComponent(editingItem.productId)}`,
+        {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            title: editingItem.productName,
+            category: editingItem.category,
+            supplier: editingItem.supplier,
+            purchase_cost: Number(editingItem.purchaseCost),
+            price: Number(editingItem.sellingPrice),
+            stock_quantity: Number(editingItem.currentStock),
+            minimum_stock: Number(editingItem.minimumStock),
+          }),
+        }
+      );
+      if (!response.ok) {
+        const body = await response.json().catch(() => null);
+        throw new Error(body?.detail || "Unable to update inventory.");
+      }
+      const updatedItem = normalizeInventoryProduct(await response.json());
+      setItems((currentItems) => currentItems.map(
+        (item) => item.productId === updatedItem.productId ? updatedItem : item
+      ));
+      onInventoryUpdated?.();
+      setEditingItem(null);
+    } catch (requestError) {
+      setSaveError(requestError.message || "Unable to update inventory.");
+    } finally {
+      setIsSaving(false);
+    }
   };
 
   const updateEditingItem = (field, value) => {
@@ -131,7 +177,7 @@ const InventoryReport = () => {
 
   return (
     <>
-      <section className="col-span-1 w-full overflow-hidden rounded-xl border border-white/5 bg-[#121812] xl:col-span-3">
+      <section className="col-span-1 w-full overflow-hidden rounded-xl border border-white/5 bg-[#121812] lg:col-span-3">
         <div className="flex flex-col gap-4 border-b border-white/10 p-4 sm:p-5 lg:flex-row lg:items-center lg:justify-between">
           <div>
             <h2 className="text-2xl font-bold text-white">Inventory</h2>
@@ -139,7 +185,7 @@ const InventoryReport = () => {
           </div>
 
           <div className="flex flex-wrap items-center gap-3">
-            <label className="relative min-w-52 flex-1">
+            <label className="relative min-w-[220px] flex-1">
               <FiSearch className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-[#8f9b8d]" />
               <input
                 value={search}
@@ -171,7 +217,7 @@ const InventoryReport = () => {
         </div>
 
         <div className="sales-table-scrollbar overflow-x-auto">
-          <table className="w-full min-w-[1150px] border-collapse text-left">
+          <table className="w-full min-w-[980px] border-collapse text-left">
             <thead className="bg-[#182218]">
               <tr className="text-xs uppercase tracking-wide text-[#c7d0c5]">
                 {["Product ID", "Product", "Category", "Supplier", "Purchase Cost", "Selling Price", "Stock", "Status", "Actions"].map((heading) => (
@@ -180,7 +226,16 @@ const InventoryReport = () => {
               </tr>
             </thead>
             <tbody>
-              {paginatedItems.map((item) => {
+              {loading && (
+                <tr><td colSpan="9" className="px-5 py-10 text-center text-gray-400">Loading inventory...</td></tr>
+              )}
+              {!loading && error && (
+                <tr><td colSpan="9" className="px-5 py-10 text-center text-red-300">{error}. Make sure FastAPI is running.</td></tr>
+              )}
+              {!loading && !error && paginatedItems.length === 0 && (
+                <tr><td colSpan="9" className="px-5 py-10 text-center text-gray-400">No inventory products found.</td></tr>
+              )}
+              {!loading && !error && paginatedItems.map((item) => {
                 const status = getStockStatus(item);
                 return (
                   <tr
@@ -226,7 +281,7 @@ const InventoryReport = () => {
 
       {editingItem && (
         <div className="fixed inset-0 z-[100] grid place-items-center p-4">
-          <button type="button" onClick={() => setEditingItem(null)} className="fixed inset-0 bg-black/65 backdrop-blur-md" aria-label="Close edit product dialog" />
+          <button type="button" onClick={() => { if (!isSaving) setEditingItem(null); }} className="fixed inset-0 bg-black/65 backdrop-blur-md" aria-label="Close edit product dialog" />
           <form onSubmit={saveItem} className="relative z-10 w-full max-w-2xl rounded-2xl border border-[#36562f] bg-[#121812] p-6 shadow-2xl">
             <h2 className="text-2xl font-bold text-white">Edit Product</h2>
             <div className="mt-6 grid gap-4 sm:grid-cols-2">
@@ -242,13 +297,14 @@ const InventoryReport = () => {
               ].map(([label, field, type]) => (
                 <label key={field} className="grid gap-2 text-sm font-semibold text-[#c7d0c5]">
                   {label}
-                  <input required min={type === "number" ? "0" : undefined} type={type} value={editingItem[field]} onChange={(event) => updateEditingItem(field, event.target.value)} className="rounded-lg border border-[#36562f] bg-[#0b100b] px-3 py-2.5 text-white outline-none focus:border-[#63b447]" />
+                  <input required min={type === "number" ? "0" : undefined} type={type} value={editingItem[field]} readOnly={field === "productId"} onChange={(event) => updateEditingItem(field, event.target.value)} className={`rounded-lg border border-[#36562f] px-3 py-2.5 outline-none ${field === "productId" ? "cursor-not-allowed bg-white/5 text-gray-400" : "bg-[#0b100b] text-white focus:border-[#63b447]"}`} />
                 </label>
               ))}
             </div>
+            {saveError && <p className="mt-4 rounded-lg border border-red-900/60 bg-red-500/10 px-4 py-3 text-sm text-red-300">{saveError}</p>}
             <div className="mt-7 flex justify-end gap-3">
-              <button type="button" onClick={() => setEditingItem(null)} className="cursor-pointer rounded-lg border border-[#36562f] px-5 py-2.5 font-semibold text-[#c7d0c5] hover:bg-white/5">Cancel</button>
-              <button type="submit" className="cursor-pointer rounded-lg bg-[#63b447] px-5 py-2.5 font-bold text-black hover:bg-[#74c957]">Save changes</button>
+              <button type="button" onClick={() => setEditingItem(null)} disabled={isSaving} className="cursor-pointer rounded-lg border border-[#36562f] px-5 py-2.5 font-semibold text-[#c7d0c5] hover:bg-white/5 disabled:opacity-50">Cancel</button>
+              <button type="submit" disabled={isSaving} className="cursor-pointer rounded-lg bg-[#63b447] px-5 py-2.5 font-bold text-black hover:bg-[#74c957] disabled:opacity-50">{isSaving ? "Saving..." : "Save changes"}</button>
             </div>
           </form>
         </div>

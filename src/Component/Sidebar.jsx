@@ -10,6 +10,7 @@ import mirzaTradersLogo from "../assets/logo.jpeg";
 
 const Sidebar = ({ isOpen = true, mobileOpen = false, onMobileClose }) => {
   const { pathname } = useLocation();
+  // Main navigation definitions; children render as collapsible subtabs.
   const NavItems = [
     { 
       name: 'Dashboard', 
@@ -48,6 +49,7 @@ const Sidebar = ({ isOpen = true, mobileOpen = false, onMobileClose }) => {
     },
   ];
 
+  // Administration stays pinned to the bottom of the sidebar.
   const FooterNavItem = {
     name: 'Administration',
     icon: GrUserAdmin,
@@ -58,6 +60,7 @@ const Sidebar = ({ isOpen = true, mobileOpen = false, onMobileClose }) => {
     ],
   };
 
+  // Store every expanded navigation group by name.
   const [openItems, setOpenItems] = useState([]);
 
   const toggleItem = (name) => {

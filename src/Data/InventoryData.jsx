@@ -1,3 +1,4 @@
+// Temporary inventory records until the Inventory API is connected.
 export const inventoryData = [
   { id: 1, 
     productId: "PRD-1001", 

@@ -1,37 +1,114 @@
 import { useEffect, useState } from 'react'
-import { useLocation } from "react-router-dom";
-import { recentSales, recentSalesSummary } from "../Data/SampleData.jsx";
-import { FiCalendar, FiChevronDown, FiChevronLeft, FiChevronRight, FiDownload, FiFilter } from "react-icons/fi";
+import { useLocation, useNavigate } from "react-router-dom";
+import { FiCalendar, FiChevronDown, FiChevronLeft, FiChevronRight, FiDownload, FiFileText, FiFilter, FiPrinter } from "react-icons/fi";
 
-const SalesReport = () => {
+const API_URL = import.meta.env.VITE_API_URL || "http://127.0.0.1:8000";
+const PAGE_LOADED_AT = Date.now();
+
+const normalizeSale = (sale) => ({
+    invoiceId: sale.invoice_id,
+    customer: {
+        name: sale.customer_name,
+        email: sale.customer_email,
+        initials: sale.customer_name
+            .split(" ")
+            .filter(Boolean)
+            .map((word) => word[0].toUpperCase())
+            .join("")
+            .slice(0, 2),
+    },
+    date: sale.invoice_date,
+    displayDate: new Intl.DateTimeFormat("en-US", {
+        month: "short",
+        day: "numeric",
+        year: "numeric",
+        timeZone: "UTC",
+    }).format(new Date(`${sale.invoice_date}T00:00:00Z`)),
+    dueDate: sale.due_date,
+    amount: sale.amount,
+    currency: sale.currency,
+    status: sale.status,
+});
+
+const SalesReport = ({ salesData, setSalesData, loading, error }) => {
     const { state } = useLocation();
-    const [salesData, setSalesData] = useState(recentSales);
+    const navigate = useNavigate();
+    const [internalSales, setInternalSales] = useState([]);
+    const [internalLoading, setInternalLoading] = useState(false);
+    const [internalError, setInternalError] = useState("");
     const [activeFilter, setActiveFilter] = useState("all");
-    const [currentPage, setCurrentPage] = useState(recentSalesSummary.currentPage);
+    const [currentPage, setCurrentPage] = useState(1);
     const [filtersOpen, setFiltersOpen] = useState(false);
     const [editingSale, setEditingSale] = useState(null);
-    const salesPerPage = recentSalesSummary.displayedSales;
-    const highlightedId = state?.searchType === "Sales Invoices" ? state.searchTarget : null;
+    const [isSaving, setIsSaving] = useState(false);
+    const [saveError, setSaveError] = useState("");
+    const [isDeleting, setIsDeleting] = useState(false);
+    const [deleteError, setDeleteError] = useState("");
+    const [highlightActive, setHighlightActive] = useState(false);
+    const [printingInvoiceId, setPrintingInvoiceId] = useState("");
+    const [downloadingInvoiceId, setDownloadingInvoiceId] = useState("");
+    const salesPerPage = 5;
+    const highlightedId =
+        state?.searchType === "Sales Invoices" &&
+        state?.searchRequestId >= PAGE_LOADED_AT
+            ? state.searchTarget
+            : null;
+    const displayedSales = salesData ?? internalSales;
+    const updateSales = setSalesData ?? setInternalSales;
+    const isLoading = loading ?? internalLoading;
+    const loadError = error ?? internalError;
+
+    // The Dashboard uses SalesReport directly, so load API data when no parent supplies it.
+    useEffect(() => {
+        if (salesData !== undefined) return undefined;
+
+        const loadSales = async () => {
+            try {
+                setInternalLoading(true);
+                setInternalError("");
+                const response = await fetch(`${API_URL}/ShowSales`);
+                if (!response.ok) throw new Error(`Unable to load sales (${response.status})`);
+                const sales = await response.json();
+                setInternalSales(sales.map(normalizeSale));
+            } catch (requestError) {
+                setInternalError(requestError.message);
+            } finally {
+                setInternalLoading(false);
+            }
+        };
+
+        loadSales();
+        return undefined;
+    }, [salesData]);
 
     useEffect(() => {
         if (!highlightedId) return undefined;
-        const saleIndex = salesData.findIndex((sale) => sale.invoiceId === highlightedId);
+        const saleIndex = displayedSales.findIndex((sale) => sale.invoiceId === highlightedId);
         if (saleIndex < 0) return undefined;
 
-        const timeout = window.setTimeout(() => {
+        const startTimeout = window.setTimeout(() => {
             setActiveFilter("all");
             setCurrentPage(Math.floor(saleIndex / salesPerPage) + 1);
+            setHighlightActive(true);
             window.setTimeout(() => {
                 document.querySelector(`[data-search-target="${highlightedId}"]`)
                     ?.scrollIntoView({ behavior: "smooth", block: "center" });
             }, 50);
         }, 0);
-        return () => window.clearTimeout(timeout);
-    }, [highlightedId, salesData, salesPerPage]);
+        const endTimeout = window.setTimeout(() => {
+            setHighlightActive(false);
+            navigate(".", { replace: true, state: null });
+        }, 3500);
+
+        return () => {
+            window.clearTimeout(startTimeout);
+            window.clearTimeout(endTimeout);
+        };
+    }, [highlightedId, displayedSales, salesPerPage, state?.searchRequestId, navigate]);
 
     const filteredSales = activeFilter === "all"
-        ? salesData
-        : salesData.filter((sale) => sale.status === activeFilter);
+        ? displayedSales
+        : displayedSales.filter((sale) => sale.status === activeFilter);
     const totalPages = Math.max(1, Math.ceil(filteredSales.length / salesPerPage));
     const firstSaleIndex = (currentPage - 1) * salesPerPage;
     const paginatedSales = filteredSales.slice(firstSaleIndex, firstSaleIndex + salesPerPage);
@@ -70,8 +147,11 @@ const SalesReport = () => {
     };
 
     const openEditModal = (sale) => {
+        setDeleteError("");
+        setSaveError("");
         setEditingSale({
             ...sale,
+            originalInvoiceId: sale.invoiceId,
             customer: { ...sale.customer },
         });
     };
@@ -106,25 +186,197 @@ const SalesReport = () => {
             maximumFractionDigits: 0,
         }).format(amount);
 
-    const saveEditedSale = (event) => {
+    const buildInvoiceDocument = (invoice) => {
+        const rows = invoice.items.length > 0
+            ? invoice.items.map((item) => `
+                <tr>
+                    <td>${item.product_title}</td>
+                    <td>${item.quantity}</td>
+                    <td>${formatAmount(item.unit_price, invoice.currency)}</td>
+                    <td>${formatAmount(item.line_total, invoice.currency)}</td>
+                </tr>
+            `).join("")
+            : `
+                <tr>
+                    <td colspan="4">Detailed invoice items are not available for this record.</td>
+                </tr>
+            `;
+
+        return `
+            <!DOCTYPE html>
+            <html>
+                <head>
+                    <title>Invoice ${invoice.invoice_id}</title>
+                    <style>
+                        body { font-family: Arial, sans-serif; padding: 32px; color: #111827; }
+                        h1, h2, p { margin: 0; }
+                        .muted { color: #4b5563; }
+                        .section { margin-top: 24px; }
+                        table { width: 100%; border-collapse: collapse; margin-top: 12px; }
+                        th, td { border: 1px solid #d1d5db; padding: 10px; text-align: left; font-size: 14px; }
+                        th { background: #f3f4f6; }
+                        .totals { margin-top: 18px; width: 320px; margin-left: auto; }
+                        .totals div { display: flex; justify-content: space-between; padding: 6px 0; }
+                        .grand-total { font-weight: 700; border-top: 1px solid #d1d5db; margin-top: 6px; padding-top: 10px; }
+                    </style>
+                </head>
+                <body>
+                    <h1>Mirza Traders</h1>
+                    <p class="muted">Invoice ${invoice.invoice_id}</p>
+
+                    <div class="section">
+                        <p><strong>Date:</strong> ${new Intl.DateTimeFormat("en-PK", {
+                            day: "2-digit",
+                            month: "long",
+                            year: "numeric",
+                        }).format(new Date(invoice.created_at || `${invoice.invoice_date}T00:00:00`))}</p>
+                        <p><strong>Customer:</strong> ${invoice.customer_name}</p>
+                        <p><strong>Email:</strong> ${invoice.customer_email}</p>
+                        <p><strong>Status:</strong> ${invoice.status}</p>
+                        <p><strong>Payment:</strong> ${invoice.payment_method}</p>
+                    </div>
+
+                    <div class="section">
+                        <h2>Invoice Items</h2>
+                        <table>
+                            <thead>
+                                <tr>
+                                    <th>Item</th>
+                                    <th>Qty</th>
+                                    <th>Price</th>
+                                    <th>Total</th>
+                                </tr>
+                            </thead>
+                            <tbody>${rows}</tbody>
+                        </table>
+                    </div>
+
+                    <div class="totals">
+                        <div><span>Subtotal</span><span>${formatAmount(invoice.subtotal, invoice.currency)}</span></div>
+                        <div><span>Tax</span><span>${formatAmount(invoice.tax, invoice.currency)}</span></div>
+                        <div class="grand-total"><span>Total</span><span>${formatAmount(invoice.total, invoice.currency)}</span></div>
+                    </div>
+                </body>
+            </html>
+        `;
+    };
+
+    const loadInvoiceDetails = async (invoiceId) => {
+        const response = await fetch(`${API_URL}/InvoiceDetails/${encodeURIComponent(invoiceId)}`);
+        if (!response.ok) {
+            const responseBody = await response.json().catch(() => null);
+            throw new Error(responseBody?.detail || "Unable to load invoice details.");
+        }
+        return response.json();
+    };
+
+    const printInvoice = async (invoiceId) => {
+        setDeleteError("");
+        setSaveError("");
+        setPrintingInvoiceId(invoiceId);
+        try {
+            const invoice = await loadInvoiceDetails(invoiceId);
+            const printWindow = window.open("", "_blank", "width=900,height=1000");
+            if (!printWindow) throw new Error("Popup blocked");
+            printWindow.document.write(buildInvoiceDocument(invoice));
+            printWindow.document.close();
+            printWindow.focus();
+            printWindow.print();
+        } catch (requestError) {
+            setDeleteError(requestError.message || "Unable to print invoice.");
+        } finally {
+            setPrintingInvoiceId("");
+        }
+    };
+
+    const downloadInvoicePdf = async (invoiceId) => {
+        setDeleteError("");
+        setSaveError("");
+        setDownloadingInvoiceId(invoiceId);
+        try {
+            const invoice = await loadInvoiceDetails(invoiceId);
+            const pdfWindow = window.open("", "_blank", "width=900,height=1000");
+            if (!pdfWindow) throw new Error("Popup blocked");
+            pdfWindow.document.write(buildInvoiceDocument(invoice));
+            pdfWindow.document.close();
+            pdfWindow.focus();
+            pdfWindow.print();
+        } catch (requestError) {
+            setDeleteError(requestError.message || "Unable to open invoice PDF.");
+        } finally {
+            setDownloadingInvoiceId("");
+        }
+    };
+
+    const saveEditedSale = async (event) => {
         event.preventDefault();
+        setIsSaving(true);
+        setSaveError("");
 
-        const displayDate = new Intl.DateTimeFormat("en-US", {
-            month: "short",
-            day: "numeric",
-            year: "numeric",
-            timeZone: "UTC",
-        }).format(new Date(`${editingSale.date}T00:00:00Z`));
-        const updatedSale = {
-            ...editingSale,
-            amount: Number(editingSale.amount),
-            displayDate,
-        };
+        try {
+            const response = await fetch(
+                `${API_URL}/updatesales/${encodeURIComponent(editingSale.originalInvoiceId)}`,
+                {
+                    method: "PUT",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({
+                        customer_name: editingSale.customer.name,
+                        customer_email: editingSale.customer.email,
+                        invoice_date: editingSale.date,
+                        due_date: editingSale.dueDate,
+                        amount: Number(editingSale.amount),
+                        currency: editingSale.currency,
+                        status: editingSale.status,
+                    }),
+                }
+            );
 
-        setSalesData((sales) =>
-            sales.map((sale) => sale.id === updatedSale.id ? updatedSale : sale)
-        );
-        setEditingSale(null);
+            if (!response.ok) {
+                const responseBody = await response.json().catch(() => null);
+                throw new Error(responseBody?.detail || "Unable to update the sale.");
+            }
+
+            const updatedSale = normalizeSale(await response.json());
+            updateSales((sales) =>
+                sales.map((sale) =>
+                    sale.invoiceId === editingSale.originalInvoiceId ? updatedSale : sale
+                )
+            );
+            setEditingSale(null);
+        } catch (requestError) {
+            setSaveError(requestError.message || "Unable to update the sale.");
+        } finally {
+            setIsSaving(false);
+        }
+    };
+
+    // Delete the active invoice in FastAPI, then remove it from cards and table state.
+    const deleteSale = async () => {
+        setIsDeleting(true);
+        setDeleteError("");
+
+        try {
+            const response = await fetch(
+                `${API_URL}/Deletesales/${encodeURIComponent(editingSale.originalInvoiceId)}`,
+                { method: "DELETE" }
+            );
+
+            if (!response.ok) {
+                const responseBody = await response.json().catch(() => null);
+                throw new Error(responseBody?.detail || "Unable to delete the sale.");
+            }
+
+            updateSales((sales) =>
+                sales.filter(
+                    (sale) => sale.invoiceId !== editingSale.originalInvoiceId
+                )
+            );
+            setEditingSale(null);
+        } catch (requestError) {
+            setDeleteError(requestError.message || "Unable to delete the sale.");
+        } finally {
+            setIsDeleting(false);
+        }
     };
     return (
         <>
@@ -202,29 +454,50 @@ const SalesReport = () => {
                         {/* Sales table column headings */}
                         <thead className="bg-[#182218]">
                             <tr className="text-xs uppercase tracking-wide text-gray-300">
-                                <th className="px-5 py-4 font-semibold">Invoice ID</th>
-                                <th className="px-5 py-4 font-semibold">Customer</th>
-                                <th className="px-5 py-4 font-semibold">Date</th>
-                                <th className="px-5 py-4 font-semibold">Amount</th>
-                                <th className="px-5 py-4 font-semibold">Status</th>
-                                <th className="px-5 py-4 text-right font-semibold">Actions</th>
+                                <th className="px-4 py-3 font-semibold">Invoice ID</th>
+                                <th className="px-4 py-3 font-semibold">Customer</th>
+                                <th className="px-4 py-3 font-semibold">Date</th>
+                                <th className="px-4 py-3 font-semibold">Amount</th>
+                                <th className="px-4 py-3 font-semibold">Status</th>
+                                <th className="px-4 py-3 text-right font-semibold">Actions</th>
                             </tr>
                         </thead>
-                        {/* Sales records loaded from SampleData\\.jsx */}
+                        {/* Sales records loaded from the FastAPI /ShowSales endpoint */}
                         <tbody>
+                            {isLoading && (
+                                <tr>
+                                    <td colSpan="6" className="px-5 py-10 text-center text-gray-400">
+                                        Loading sales...
+                                    </td>
+                                </tr>
+                            )}
+                            {!isLoading && loadError && (
+                                <tr>
+                                    <td colSpan="6" className="px-5 py-10 text-center text-red-300">
+                                        {loadError}. Make sure the FastAPI server is running.
+                                    </td>
+                                </tr>
+                            )}
+                            {!isLoading && !loadError && paginatedSales.length === 0 && (
+                                <tr>
+                                    <td colSpan="6" className="px-5 py-10 text-center text-gray-400">
+                                        No sales found.
+                                    </td>
+                                </tr>
+                            )}
                             {paginatedSales.map((sale) => (
                                 <tr
-                                    key={sale.id}
+                                    key={sale.invoiceId}
                                     data-search-target={sale.invoiceId}
-                                    className={`border-b border-white/10 text-sm text-gray-300 last:border-b-0 ${sale.invoiceId === highlightedId ? "search-result-highlight" : ""}`}
+                                    className={`border-b border-white/10 text-sm text-gray-300 last:border-b-0 ${sale.invoiceId === highlightedId && highlightActive ? "search-result-highlight" : ""}`}
                                 >
-                                    <td className="whitespace-nowrap px-5 py-5 text-base">
+                                    <td className="whitespace-nowrap px-4 py-3.5 text-sm">
                                         #{sale.invoiceId}
                                     </td>
-                                    <td className="px-5 py-5">
+                                    <td className="px-4 py-3.5">
                                         {/* Customer avatar initials, name, and email */}
-                                        <div className="flex items-center gap-3">
-                                            <span className="grid size-10 shrink-0 place-items-center rounded-full bg-[#294324] text-xs font-bold text-white">
+                                        <div className="flex items-center gap-2">
+                                            <span className="grid size-8 shrink-0 place-items-center rounded-full bg-[#294324] text-[10px] font-bold text-white">
                                                 {sale.customer.initials}
                                             </span>
                                             <div>
@@ -233,25 +506,43 @@ const SalesReport = () => {
                                             </div>
                                         </div>
                                     </td>
-                                    <td className="whitespace-nowrap px-5 py-5">{sale.displayDate}</td>
-                                    <td className="whitespace-nowrap px-5 py-5 font-bold text-white">
+                                    <td className="whitespace-nowrap px-4 py-3.5">{sale.displayDate}</td>
+                                    <td className="whitespace-nowrap px-4 py-3.5 font-bold text-white">
                                         {formatAmount(sale.amount, sale.currency)}
                                     </td>
-                                    <td className="px-5 py-5">
+                                    <td className="px-4 py-3.5">
                                         {/* Status badge */}
                                         <span className={`inline-flex rounded-full border px-4 py-1 text-xs font-bold uppercase tracking-wider ${statusStyles[sale.status]}`}>
                                             {sale.status}
                                         </span>
                                     </td>
-                                    <td className="px-5 py-5 text-right">
-                                        <button
-                                            type="button"
-                                            onClick={() => openEditModal(sale)}
-                                            className="cursor-pointer rounded-lg border border-[#36562f] px-3 py-1.5 text-xs font-semibold text-gray-300 transition-colors hover:bg-[#315f25] hover:text-white"
-                                            aria-label={`Edit ${sale.invoiceId}`}
-                                        >
-                                            Edit
-                                        </button>
+                                    <td className="px-4 py-3.5 text-right">
+                                        <div className="flex justify-end gap-2">
+                                            <button
+                                                type="button"
+                                                onClick={() => printInvoice(sale.invoiceId)}
+                                                className="cursor-pointer rounded-lg border border-[#36562f] px-3 py-1.5 text-xs font-semibold text-gray-300 transition-colors hover:bg-[#315f25] hover:text-white"
+                                                aria-label={`Print ${sale.invoiceId}`}
+                                            >
+                                                {printingInvoiceId === sale.invoiceId ? <span>Printing...</span> : <FiPrinter />}
+                                            </button>
+                                            <button
+                                                type="button"
+                                                onClick={() => downloadInvoicePdf(sale.invoiceId)}
+                                                className="cursor-pointer rounded-lg border border-[#36562f] px-3 py-1.5 text-xs font-semibold text-gray-300 transition-colors hover:bg-[#315f25] hover:text-white"
+                                                aria-label={`Download PDF for ${sale.invoiceId}`}
+                                            >
+                                                {downloadingInvoiceId === sale.invoiceId ? <span>Opening...</span> : <FiFileText />}
+                                            </button>
+                                            <button
+                                                type="button"
+                                                onClick={() => openEditModal(sale)}
+                                                className="cursor-pointer rounded-lg border border-[#36562f] px-3 py-1.5 text-xs font-semibold text-gray-300 transition-colors hover:bg-[#315f25] hover:text-white"
+                                                aria-label={`Edit ${sale.invoiceId}`}
+                                            >
+                                                Edit
+                                            </button>
+                                        </div>
                                     </td>
                                 </tr>
                             ))}
@@ -260,7 +551,7 @@ const SalesReport = () => {
                 </div>
 
                 {/* Report footer containing result count and pagination */}
-                <div className="flex flex-col gap-4 border-t border-white/10 px-5 py-4 text-sm text-gray-300 sm:flex-row sm:items-center sm:justify-between">
+                <div className="flex flex-col gap-3 border-t border-white/10 px-4 py-3 text-sm text-gray-300 sm:flex-row sm:items-center sm:justify-between">
                     {/* Visible and total sales count */}
                     <p>
                         Showing <strong className="text-white">{paginatedSales.length}</strong> of{" "}
@@ -309,7 +600,9 @@ const SalesReport = () => {
                 <div className="fixed inset-0 z-[100] grid place-items-center overflow-y-auto p-4">
                     <button
                         type="button"
-                        onClick={() => setEditingSale(null)}
+                        onClick={() => {
+                            if (!isDeleting && !isSaving) setEditingSale(null);
+                        }}
                         className="fixed inset-0 bg-black/70 backdrop-blur-md"
                         aria-label="Close edit sale dialog"
                     />
@@ -326,7 +619,8 @@ const SalesReport = () => {
                             <button
                                 type="button"
                                 onClick={() => setEditingSale(null)}
-                                className="grid size-9 place-items-center rounded-lg text-xl text-[#c7d0c5] hover:bg-white/10 hover:text-white cursor-pointer"
+                                disabled={isDeleting || isSaving}
+                                className="grid size-9 place-items-center rounded-lg text-xl text-[#c7d0c5] hover:bg-white/10 hover:text-white cursor-pointer disabled:cursor-not-allowed disabled:opacity-40"
                                 aria-label="Close edit sale dialog"
                             >
                                 ×
@@ -339,8 +633,8 @@ const SalesReport = () => {
                                 <input
                                     required
                                     value={editingSale.invoiceId}
-                                    onChange={(event) => updateEditingSale("invoiceId", event.target.value)}
-                                    className="rounded-lg border border-[#36562f] bg-[#0b100b] px-3 py-2.5 text-[#ffffff] outline-none focus:border-[#63b447]"
+                                    readOnly
+                                    className="cursor-not-allowed rounded-lg border border-[#36562f] bg-white/5 px-3 py-2.5 text-gray-400 outline-none"
                                 />
                             </label>
 
@@ -380,14 +674,17 @@ const SalesReport = () => {
                             </label>
 
                             <label className="grid gap-2 text-sm font-semibold text-[#c7d0c5]">
-                                Customer initials
-                                <input
-                                    required
-                                    maxLength={3}
-                                    value={editingSale.customer.initials}
-                                    onChange={(event) => updateEditingCustomer("initials", event.target.value.toUpperCase())}
-                                    className="rounded-lg border border-[#36562f] bg-[#0b100b] px-3 py-2.5 uppercase text-[#ffffff] outline-none focus:border-[#63b447]"
-                                />
+                                Due date
+                                <div className="relative">
+                                    <input
+                                        required
+                                        type="date"
+                                        value={editingSale.dueDate}
+                                        onChange={(event) => updateEditingSale("dueDate", event.target.value)}
+                                        className="custom-date-input w-full rounded-lg border border-[#36562f] bg-[#0b100b] py-2.5 pl-3 pr-10 text-[#ffffff] outline-none focus:border-[#63b447]"
+                                    />
+                                    <FiCalendar className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-lg text-white" />
+                                </div>
                             </label>
 
                             <label className="grid gap-2 text-sm font-semibold text-[#c7d0c5]">
@@ -434,19 +731,27 @@ const SalesReport = () => {
                             </label>
                         </div>
 
-                        <div className="mt-7 flex justify-end gap-3">
+                        {(saveError || deleteError) && (
+                            <p className="mt-5 rounded-lg border border-red-900/60 bg-red-500/10 px-4 py-3 text-sm text-red-300">
+                                {saveError || deleteError}
+                            </p>
+                        )}
+
+                        <div className="mt-7 flex items-center justify-between gap-3">
                             <button
                                 type="button"
-                                onClick={() => setEditingSale(null)}
-                                className="rounded-lg border border-[#36562f] px-5 py-2.5 font-semibold text-[#c7d0c5] hover:bg-white/5 cursor-pointer"
+                                onClick={deleteSale}
+                                disabled={isDeleting || isSaving}
+                                className="cursor-pointer rounded-lg border border-red-800/70 bg-red-500/10 px-5 py-2.5 font-bold text-red-300 transition-colors hover:bg-red-500/20 disabled:cursor-not-allowed disabled:opacity-60"
                             >
-                                Cancel
+                                {isDeleting ? "Deleting..." : "Delete"}
                             </button>
                             <button
                                 type="submit"
-                                className="rounded-lg bg-[#63b447] px-5 py-2.5 font-bold text-[#000000] transition-colors hover:bg-[#74c957] cursor-pointer"
+                                disabled={isDeleting || isSaving}
+                                className="rounded-lg bg-[#63b447] px-5 py-2.5 font-bold text-[#000000] transition-colors hover:bg-[#74c957] cursor-pointer disabled:cursor-not-allowed disabled:opacity-60"
                             >
-                                Save changes
+                                {isSaving ? "Saving..." : "Save changes"}
                             </button>
                         </div>
                     </form>
