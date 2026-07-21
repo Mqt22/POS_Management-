@@ -1,3 +1,4 @@
+// Temporary purchase records until purchase endpoints replace local data.
 export const purchaseSummary = [
   {
     id: 1,

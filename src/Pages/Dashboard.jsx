@@ -4,6 +4,7 @@ import Topbar from '../Component/Topbar'
 import { Outlet } from 'react-router-dom'
 
 const Dashboard = () => {
+    // Track desktop collapse and mobile drawer state independently.
     const [desktopSidebarOpen, setDesktopSidebarOpen] = useState(true);
     const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
     const toggleSidebar = () => {
@@ -14,6 +15,7 @@ const Dashboard = () => {
         }
     };
     return (
+        // Shared application shell: sidebar, top bar, and current nested route.
         <div className="flex h-dvh w-full overflow-hidden bg-[#080b08]">
             <Sidebar
                 isOpen={desktopSidebarOpen}

@@ -1,3 +1,4 @@
+// Temporary financial values until report aggregation moves to FastAPI.
 export const financialSummary = [
   { label: "Total Revenue", value: 524000, change: "+12.5%", tone: "green" },
   { label: "Total Expenses", value: 312850, change: "-4.2%", tone: "red" },

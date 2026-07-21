@@ -9,6 +9,7 @@ const ThermalReceipt = ({ receipt }) => {
   if (!receipt) return null;
 
   return (
+    // Hidden on screen; index.css reveals and sizes this section only during print.
     <section className="thermal-receipt" aria-hidden="true">
       <header className="receipt-center">
         <h1>Mirza Traders</h1>

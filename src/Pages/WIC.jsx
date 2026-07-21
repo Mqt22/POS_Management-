@@ -1,28 +1,29 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   FiMinus,
+  FiEdit2,
   FiPlus,
   FiPrinter,
-  FiSearch,
   FiShoppingCart,
   FiTrash2,
   FiUser,
 } from "react-icons/fi";
-import { MdInventory2, MdOutlineReceiptLong } from "react-icons/md";
+import { MdInventory2 } from "react-icons/md";
+import { useLocation, useNavigate } from "react-router-dom";
 import ThermalReceipt from "../Component/ThermalReceipt.jsx";
+import CreateSalesButton from "../Component/create_Sales_button.jsx";
 
-const products = [
-  { id: 1, name: "18mm Commercial Plywood", sku: "PLY-18-COM", category: "Plywood", price: 82, stock: 24 },
-  { id: 2, name: "12mm Marine Plywood", sku: "PLY-12-MAR", category: "Plywood", price: 96, stock: 18 },
-  { id: 3, name: "Laminated MDF Board", sku: "MDF-LAM-01", category: "Boards", price: 64, stock: 31 },
-  { id: 4, name: "Soft-Close Cabinet Hinge", sku: "HDW-HNG-12", category: "Hardware", price: 8.5, stock: 86 },
-  { id: 5, name: "Drawer Channel Pair", sku: "HDW-DRW-18", category: "Hardware", price: 14, stock: 43 },
-  { id: 6, name: "Wood Adhesive 5kg", sku: "ADH-WD-05", category: "Adhesives", price: 22, stock: 15 },
-  { id: 7, name: "Door Handle Set", sku: "HDW-DOR-07", category: "Hardware", price: 31, stock: 27 },
-  { id: 8, name: "PVC Edge Band Roll", sku: "EDG-PVC-02", category: "Accessories", price: 18, stock: 39 },
-];
+const API_URL = import.meta.env.VITE_API_URL || "http://127.0.0.1:8000";
+const PAGE_LOADED_AT = Date.now();
 
-const categories = ["All", ...new Set(products.map((product) => product.category))];
+const normalizeProduct = (product) => ({
+  id: product.product_id,
+  name: product.title,
+  sku: product.sku,
+  category: product.category,
+  price: product.price,
+  stock: product.stock_quantity,
+});
 
 const formatCurrency = (amount) =>
   new Intl.NumberFormat("en-PK", {
@@ -32,14 +33,132 @@ const formatCurrency = (amount) =>
   }).format(amount);
 
 const WIC = () => {
-  const [search, setSearch] = useState("");
+  const { state } = useLocation();
+  const navigate = useNavigate();
+  const [products, setProducts] = useState([]);
+  const [productsLoading, setProductsLoading] = useState(true);
+  const [productsError, setProductsError] = useState("");
   const [activeCategory, setActiveCategory] = useState("All");
+  const [highlightActive, setHighlightActive] = useState(false);
   const [cart, setCart] = useState([]);
   const [paymentMethod, setPaymentMethod] = useState("cash");
   const [amountReceived, setAmountReceived] = useState("");
   const [customer, setCustomer] = useState({ name: "", phone: "" });
   const [receipt, setReceipt] = useState(null);
-  const invoiceSequenceRef = useRef(1001);
+  const [editingProduct, setEditingProduct] = useState(null);
+  const [deletingProduct, setDeletingProduct] = useState(null);
+  const [isDeletingProduct, setIsDeletingProduct] = useState(false);
+  const [productActionError, setProductActionError] = useState("");
+  const [isCheckingOut, setIsCheckingOut] = useState(false);
+  const [checkoutError, setCheckoutError] = useState("");
+
+  const handleProductCreated = (product) => {
+    setProducts((currentProducts) => [
+      normalizeProduct(product),
+      ...currentProducts,
+    ]);
+  };
+
+  const handleProductUpdated = (product) => {
+    const updatedProduct = normalizeProduct(product);
+    setProducts((currentProducts) =>
+      currentProducts.map((item) =>
+        item.id === updatedProduct.id ? updatedProduct : item
+      )
+    );
+    setCart((currentCart) =>
+      currentCart.map((item) =>
+        item.id === updatedProduct.id
+          ? {
+              ...item,
+              ...updatedProduct,
+              quantity: Math.min(item.quantity, updatedProduct.stock),
+            }
+          : item
+      ).filter((item) => item.quantity > 0 && item.stock > 0)
+    );
+    setEditingProduct(null);
+  };
+
+  const deleteProduct = async () => {
+    if (!deletingProduct) return;
+    setIsDeletingProduct(true);
+    setProductActionError("");
+
+    try {
+      const response = await fetch(
+        `${API_URL}/deleteproducts/${encodeURIComponent(deletingProduct.id)}`,
+        { method: "DELETE" }
+      );
+      if (!response.ok) {
+        const responseBody = await response.json().catch(() => null);
+        throw new Error(responseBody?.detail || "Unable to delete the product.");
+      }
+
+      setProducts((items) => items.filter((item) => item.id !== deletingProduct.id));
+      setCart((items) => items.filter((item) => item.id !== deletingProduct.id));
+      setDeletingProduct(null);
+    } catch (requestError) {
+      setProductActionError(requestError.message || "Unable to delete the product.");
+    } finally {
+      setIsDeletingProduct(false);
+    }
+  };
+
+  // Load the Quick Sale product cards from FastAPI.
+  useEffect(() => {
+    const loadProducts = async () => {
+      try {
+        setProductsLoading(true);
+        setProductsError("");
+        const response = await fetch(`${API_URL}/Showproducts`);
+        if (!response.ok) {
+          throw new Error(`Unable to load products (${response.status})`);
+        }
+
+        const productRecords = await response.json();
+        setProducts(productRecords.map(normalizeProduct));
+      } catch (requestError) {
+        setProductsError(requestError.message || "Unable to load products.");
+      } finally {
+        setProductsLoading(false);
+      }
+    };
+
+    loadProducts();
+  }, []);
+
+  const highlightedProductId =
+    state?.searchType === "Products" && state?.searchRequestId >= PAGE_LOADED_AT
+      ? state.searchTarget
+      : null;
+
+  useEffect(() => {
+    if (!highlightedProductId) return undefined;
+    const productExists = products.some(
+      (product) => product.id === highlightedProductId
+    );
+    if (!productExists) return undefined;
+
+    const startTimeout = window.setTimeout(() => {
+      setActiveCategory("All");
+      setHighlightActive(true);
+      window.setTimeout(() => {
+        document
+          .querySelector(`[data-search-target="${highlightedProductId}"]`)
+          ?.scrollIntoView({ behavior: "smooth", block: "center" });
+      }, 50);
+    }, 0);
+    const endTimeout = window.setTimeout(() => {
+      setHighlightActive(false);
+      navigate(".", { replace: true, state: null });
+    }, 3500);
+
+    return () => {
+      window.clearTimeout(startTimeout);
+      window.clearTimeout(endTimeout);
+    };
+  }, [highlightedProductId, products, state?.searchRequestId, navigate]);
 
   useEffect(() => {
     if (!receipt) return undefined;
@@ -53,21 +172,21 @@ const WIC = () => {
   }, [receipt]);
 
   const filteredProducts = useMemo(() => {
-    const query = search.trim().toLowerCase();
-
     return products.filter((product) => {
       const matchesCategory = activeCategory === "All" || product.category === activeCategory;
-      const matchesSearch =
-        !query ||
-        product.name.toLowerCase().includes(query) ||
-        product.sku.toLowerCase().includes(query);
-
-      return matchesCategory && matchesSearch;
+      return matchesCategory;
     });
-  }, [activeCategory, search]);
+  }, [activeCategory, products]);
+
+  const categories = useMemo(
+    () => ["All", ...new Set(products.map((product) => product.category))],
+    [products]
+  );
 
   const addToCart = (product) => {
     setCart((currentCart) => {
+      if (product.stock <= 0) return currentCart;
+
       const existingItem = currentCart.find((item) => item.id === product.id);
 
       if (existingItem) {
@@ -102,32 +221,79 @@ const WIC = () => {
   const canCompleteSale =
     cart.length > 0 && (paymentMethod !== "cash" || receivedAmount >= grandTotal);
 
-  const completeSale = (shouldPrint = false) => {
-    if (!canCompleteSale) return;
+  const completeSale = async (shouldPrint = false) => {
+    if (!canCompleteSale || isCheckingOut) return;
+    setIsCheckingOut(true);
+    setCheckoutError("");
 
-    if (shouldPrint) {
-      const invoiceNumber = `INV-DEMO-${invoiceSequenceRef.current}`;
-      invoiceSequenceRef.current += 1;
-      setReceipt({
-        invoiceNumber,
-        date: new Intl.DateTimeFormat("en-PK", {
-          dateStyle: "medium",
-          timeStyle: "short",
-        }).format(new Date()),
-        customer: { ...customer },
-        items: cart.map((item) => ({ ...item })),
-        subtotal,
-        tax,
-        grandTotal,
-        paymentMethod: paymentMethod.toUpperCase(),
-        amountPaid: paymentMethod === "cash" ? receivedAmount : grandTotal,
-        changeDue,
+    try {
+      const response = await fetch(`${API_URL}/checkout`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          customer_name: customer.name || null,
+          customer_phone: customer.phone || null,
+          payment_method: paymentMethod,
+          amount_received: paymentMethod === "cash" ? receivedAmount : grandTotal,
+          items: cart.map((item) => ({
+            product_id: item.id,
+            quantity: item.quantity,
+          })),
+        }),
       });
-    }
 
-    setCart([]);
-    setAmountReceived("");
-    setCustomer({ name: "", phone: "" });
+      if (!response.ok) {
+        const responseBody = await response.json().catch(() => null);
+        throw new Error(responseBody?.detail || "Unable to save checkout.");
+      }
+
+      const savedCheckout = await response.json();
+
+      // Reflect the stock quantities already reduced by FastAPI.
+      setProducts((currentProducts) =>
+        currentProducts.map((product) => {
+          const soldItem = cart.find((item) => item.id === product.id);
+          return soldItem
+            ? { ...product, stock: product.stock - soldItem.quantity }
+            : product;
+        })
+      );
+
+      if (shouldPrint) {
+        setReceipt({
+          invoiceNumber: savedCheckout.invoice_id,
+          date: new Intl.DateTimeFormat("en-PK", {
+            dateStyle: "medium",
+            timeStyle: "short",
+          }).format(new Date(savedCheckout.created_at)),
+          customer: {
+            name: savedCheckout.customer_name,
+            phone: savedCheckout.customer_phone || "",
+          },
+          items: savedCheckout.items.map((item) => ({
+            id: item.product_id,
+            name: item.product_title,
+            sku: item.sku,
+            quantity: item.quantity,
+            price: item.unit_price,
+          })),
+          subtotal: savedCheckout.subtotal,
+          tax: savedCheckout.tax,
+          grandTotal: savedCheckout.total,
+          paymentMethod: savedCheckout.payment_method.toUpperCase(),
+          amountPaid: savedCheckout.amount_received,
+          changeDue: savedCheckout.change_amount,
+        });
+      }
+
+      setCart([]);
+      setAmountReceived("");
+      setCustomer({ name: "", phone: "" });
+    } catch (requestError) {
+      setCheckoutError(requestError.message || "Unable to save checkout.");
+    } finally {
+      setIsCheckingOut(false);
+    }
   };
 
   return (
@@ -137,31 +303,19 @@ const WIC = () => {
         <div>
           <p className="text-xs font-bold uppercase tracking-[0.2em] text-[#74c957]">Point of Sale</p>
           <h1 className="mt-1 text-2xl font-bold sm:text-3xl">Walk-in Customer</h1>
-          <p className="mt-1 text-sm text-gray-400">Create a quick sale without opening a customer account.</p>
+          <p className="mt-1 text-sm text-gray-400">Leave customer details blank for a walk-in sale, or enter both fields to save a customer automatically.</p>
         </div>
-        <div className="flex items-center gap-2 rounded-xl border border-[#36562f] bg-[#121812] px-4 py-2 text-sm text-gray-300">
-          <MdOutlineReceiptLong className="text-xl text-[#74c957]" />
-          New transaction
-        </div>
+        <CreateSalesButton
+          mode="product"
+          onProductCreated={handleProductCreated}
+        />
       </div>
 
-      <div className="grid min-w-0 gap-6 xl:grid-cols-[minmax(0,1fr)_390px]">
+      <div className="grid min-w-0 gap-6 lg:grid-cols-[minmax(0,1fr)_340px] xl:grid-cols-[minmax(0,1fr)_390px]">
         {/* Product selection area */}
         <section className="min-w-0 rounded-2xl border border-[#2f4a2b] bg-[#121812] p-4 sm:p-5">
-          {/* Product search */}
-          <div className="relative">
-            <FiSearch className="pointer-events-none absolute left-4 top-1/2 -translate-y-1/2 text-lg text-gray-400" />
-            <input
-              type="search"
-              value={search}
-              onChange={(event) => setSearch(event.target.value)}
-              placeholder="Search products by name or SKU..."
-              className="w-full rounded-xl border border-[#36562f] bg-[#0b100b] py-3 pl-11 pr-4 text-white outline-none placeholder:text-gray-500 focus:border-[#63b447]"
-            />
-          </div>
-
           {/* Product category filters */}
-          <div className="sales-table-scrollbar mt-4 flex gap-2 overflow-x-auto pb-2">
+          <div className="sales-table-scrollbar flex gap-2 overflow-x-auto pb-2">
             {categories.map((category) => (
               <button
                 key={category}
@@ -179,15 +333,71 @@ const WIC = () => {
           </div>
 
           {/* Product card grid */}
+          {productsLoading && (
+            <div className="grid min-h-52 place-items-center text-sm text-gray-400">
+              Loading products...
+            </div>
+          )}
+
+          {!productsLoading && productsError && (
+            <div className="grid min-h-52 place-items-center px-4 text-center text-sm text-red-300">
+              {productsError}. Make sure the FastAPI server is running.
+            </div>
+          )}
+
           <div className="mt-4 grid grid-cols-[repeat(auto-fill,minmax(min(100%,190px),1fr))] gap-3">
-            {filteredProducts.map((product) => (
-              <button
+            {!productsLoading && !productsError && filteredProducts.map((product) => (
+              <article
                 key={product.id}
-                type="button"
-                onClick={() => addToCart(product)}
-                disabled={product.stock === 0}
-                className="group cursor-pointer rounded-xl border border-[#2f4a2b] bg-[#0d120d] p-4 text-left transition hover:-translate-y-0.5 hover:border-[#63b447] hover:bg-[#172117] disabled:cursor-not-allowed disabled:opacity-40"
+                data-search-target={product.id}
+                onClick={() => {
+                  if (product.stock > 0) addToCart(product);
+                }}
+                onKeyDown={(event) => {
+                  if ((event.key === "Enter" || event.key === " ") && product.stock > 0) {
+                    event.preventDefault();
+                    addToCart(product);
+                  }
+                }}
+                role="button"
+                tabIndex={product.stock > 0 ? 0 : -1}
+                aria-disabled={product.stock === 0}
+                className={`group relative rounded-xl border border-[#2f4a2b] bg-[#0d120d] p-4 text-left transition hover:-translate-y-0.5 hover:border-[#63b447] hover:bg-[#172117] ${
+                  product.id === highlightedProductId && highlightActive
+                    ? "search-result-highlight "
+                    : ""
+                }${
+                  product.stock === 0
+                    ? "cursor-not-allowed border-red-900/70 bg-red-950/10"
+                    : "cursor-pointer"
+                }`}
               >
+                <div className="absolute right-3 top-3 z-10 flex gap-1 opacity-100 transition-opacity lg:opacity-0 lg:group-hover:opacity-100 lg:group-focus-within:opacity-100">
+                  <button
+                    type="button"
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      setProductActionError("");
+                      setEditingProduct(product);
+                    }}
+                    className="grid size-8 cursor-pointer place-items-center rounded-lg border border-[#36562f] bg-[#121812] text-gray-300 shadow-lg hover:border-[#63b447] hover:text-[#8bd174]"
+                    aria-label={`Edit ${product.name}`}
+                  >
+                    <FiEdit2 />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      setProductActionError("");
+                      setDeletingProduct(product);
+                    }}
+                    className="grid size-8 cursor-pointer place-items-center rounded-lg border border-red-900/70 bg-[#121812] text-red-300 shadow-lg hover:bg-red-500/15"
+                    aria-label={`Delete ${product.name}`}
+                  >
+                    <FiTrash2 />
+                  </button>
+                </div>
                 <div className="mb-4 flex items-start justify-between gap-3">
                   <span className="grid size-10 place-items-center rounded-lg bg-[#63b447]/15 text-xl text-[#74c957]">
                     <MdInventory2 />
@@ -200,13 +410,19 @@ const WIC = () => {
                 <p className="mt-1 text-xs text-gray-500">{product.sku}</p>
                 <div className="mt-4 flex items-end justify-between gap-3">
                   <strong className="text-lg text-[#74c957]">{formatCurrency(product.price)}</strong>
-                  <span className="text-xs text-gray-400">{product.stock} in stock</span>
+                  {product.stock === 0 ? (
+                    <span className="rounded-full border border-red-800/70 bg-red-500/10 px-2.5 py-1 text-[10px] font-bold uppercase tracking-wide text-red-300">
+                      Out of Stock
+                    </span>
+                  ) : (
+                    <span className="text-xs text-gray-400">{product.stock} in stock</span>
+                  )}
                 </div>
-              </button>
+              </article>
             ))}
           </div>
 
-          {filteredProducts.length === 0 && (
+          {!productsLoading && !productsError && filteredProducts.length === 0 && (
             <div className="grid min-h-52 place-items-center text-center text-gray-400">
               <div>
                 <MdInventory2 className="mx-auto text-4xl" />
@@ -217,7 +433,7 @@ const WIC = () => {
         </section>
 
         {/* Cart and checkout area */}
-        <aside className="min-w-0 rounded-2xl border border-[#2f4a2b] bg-[#121812] xl:sticky xl:top-0 xl:self-start">
+        <aside className="min-w-0 rounded-2xl border border-[#2f4a2b] bg-[#121812] lg:sticky lg:top-0 lg:self-start">
           <div className="flex items-center justify-between border-b border-white/10 p-5">
             <div className="flex items-center gap-3">
               <span className="grid size-10 place-items-center rounded-lg bg-[#63b447]/15 text-xl text-[#74c957]">
@@ -302,6 +518,7 @@ const WIC = () => {
                 className="min-w-0 rounded-lg border border-[#36562f] bg-[#0b100b] px-3 py-2 text-sm outline-none placeholder:text-gray-500 focus:border-[#63b447]"
               />
             </div>
+            <p className="mt-2 text-xs text-gray-500">Returning customers are matched using their phone number.</p>
           </div>
 
           {/* Sale totals and payment */}
@@ -356,28 +573,109 @@ const WIC = () => {
               </div>
             )}
 
+            {checkoutError && (
+              <p className="rounded-lg border border-red-900/60 bg-red-500/10 px-4 py-3 text-sm text-red-300">
+                {checkoutError}
+              </p>
+            )}
+
+            {isCheckingOut && (
+              <div className="rounded-lg border border-[#36562f] bg-[#0b100b] p-3">
+                <div className="flex justify-between gap-3 text-xs">
+                  <span className="font-semibold text-white">Saving checkout...</span>
+                  <span className="text-[#74c957]">Please wait</span>
+                </div>
+                <div className="mt-2 h-2 overflow-hidden rounded-full bg-[#243024]">
+                  <div className="h-full w-2/3 animate-pulse rounded-full bg-[#63b447]" />
+                </div>
+              </div>
+            )}
+
             <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-1">
               <button
                 type="button"
-                disabled={!canCompleteSale}
+                disabled={!canCompleteSale || isCheckingOut}
                 onClick={() => completeSale(false)}
                 className="w-full cursor-pointer rounded-xl border border-[#63b447] py-3 font-bold text-[#8bd174] transition hover:bg-[#63b447]/10 disabled:cursor-not-allowed disabled:border-gray-700 disabled:text-gray-500"
               >
-                Checkout
+                {isCheckingOut ? "Saving..." : "Checkout"}
               </button>
               <button
                 type="button"
-                disabled={!canCompleteSale}
+                disabled={!canCompleteSale || isCheckingOut}
                 onClick={() => completeSale(true)}
                 className="flex w-full cursor-pointer items-center justify-center gap-2 rounded-xl bg-[#63b447] py-3 font-bold text-black transition hover:bg-[#74c957] disabled:cursor-not-allowed disabled:bg-gray-700 disabled:text-gray-400"
               >
                 <FiPrinter />
-                Checkout &amp; Print
+                {isCheckingOut ? "Saving..." : "Checkout & Print"}
               </button>
             </div>
           </div>
         </aside>
       </div>
+
+      {editingProduct && (
+        <CreateSalesButton
+          key={editingProduct.id}
+          mode="product"
+          hideTrigger
+          productToEdit={editingProduct}
+          onProductUpdated={handleProductUpdated}
+          onEditClosed={() => setEditingProduct(null)}
+        />
+      )}
+
+      {deletingProduct && (
+        <div className="fixed inset-0 z-[150] grid place-items-center p-4">
+          <button
+            type="button"
+            onClick={() => {
+              if (!isDeletingProduct) setDeletingProduct(null);
+            }}
+            className="fixed inset-0 bg-black/70 backdrop-blur-md"
+            aria-label="Close delete product confirmation"
+          />
+          <section className="relative z-10 w-full max-w-md rounded-2xl border border-red-900/60 bg-[#121812] p-6 shadow-2xl">
+            <h2 className="text-xl font-bold text-white">Delete product?</h2>
+            <p className="mt-3 text-sm leading-relaxed text-gray-400">
+              Delete <strong className="text-white">{deletingProduct.name}</strong>?
+              This action cannot be undone.
+            </p>
+
+            {productActionError && (
+              <p className="mt-4 rounded-lg border border-red-900/60 bg-red-500/10 px-4 py-3 text-sm text-red-300">
+                {productActionError}
+              </p>
+            )}
+
+            {isDeletingProduct && (
+              <div className="mt-4 h-2 overflow-hidden rounded-full bg-[#243024]">
+                <div className="h-full w-2/3 animate-pulse rounded-full bg-red-500" />
+              </div>
+            )}
+
+            <div className="mt-6 flex justify-end gap-3">
+              <button
+                type="button"
+                onClick={() => setDeletingProduct(null)}
+                disabled={isDeletingProduct}
+                className="cursor-pointer rounded-lg border border-[#36562f] px-4 py-2.5 font-semibold text-gray-300 hover:bg-white/5 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={deleteProduct}
+                disabled={isDeletingProduct}
+                className="cursor-pointer rounded-lg bg-red-600 px-4 py-2.5 font-bold text-white hover:bg-red-500 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {isDeletingProduct ? "Deleting..." : "Delete"}
+              </button>
+            </div>
+          </section>
+        </div>
+      )}
+
       <ThermalReceipt receipt={receipt} />
     </main>
   );

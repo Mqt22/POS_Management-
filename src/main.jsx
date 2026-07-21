@@ -4,6 +4,7 @@ import './index.css'
 import App from './App.jsx'
 import { BrowserRouter } from 'react-router-dom'
 
+// Mount the routed dashboard application into index.html.
 createRoot(document.getElementById('root')).render(
   <BrowserRouter>
     <StrictMode>
